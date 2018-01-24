@@ -31,35 +31,32 @@ final class StreamSubscription[F[_], A](
     async.unsafeRunAsync {
       stream
         .through(subscriptionPipe(requests.dequeueAvailable))
-        .map(sub.onNext)
+        .flatMap(e => Stream.eval(F.delay(sub.onNext(e))))
         .compile
         .drain
     } {
       case Left(Cancellation) =>
         IO.unit
       case Left(InvalidNumber(n)) =>
-        IO.pure(
-          sub.onError(new IllegalArgumentException(s"3.9 - invalid number of elements [$n]"))
-        )
+        IO(sub.onError(new IllegalArgumentException(s"3.9 - invalid number of elements [$n]")))
       case Left(err) =>
-        IO.pure(sub.onError(err))
+        IO(sub.onError(err))
       case Right(_) =>
-        IO.pure(sub.onComplete())
+        IO(sub.onComplete())
     }
 
   def cancel(): Unit =
-    F.runAsync(cancelled.setSync(true) *> requests.enqueue1(Cancelled))(_ => IO.unit)
-      .unsafeRunSync()
+    async.unsafeRunAsync(cancelled.setSync(true) >> requests.enqueue1(Cancelled))(_ => IO.unit)
 
   def request(n: Long): Unit = {
     val request =
       if (n == java.lang.Long.MAX_VALUE) InfiniteRequests
       else if (n > 0) FiniteRequests(n)
       else InvalidNumber(n)
-    F.runAsync(cancelled.get >>= (c => if (c) F.pure(()) else requests.enqueue1(request)))(
-        _ => IO.unit
-      )
-      .unsafeRunSync
+    async.unsafeRunAsync(cancelled.get.flatMap { c =>
+      if (c) F.unit
+      else requests.enqueue1(request)
+    })(_ => IO.unit)
   }
 }
 
